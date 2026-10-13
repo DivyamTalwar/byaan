@@ -480,7 +480,18 @@ def test_filter_compiler_matches_exact_configured_id_ending_with_range_suffix(co
     assert compiled[0].value == value
 
 
-def test_filter_compiler_matches_exact_column_alias_ending_with_range_suffix() -> None:
+@pytest.mark.parametrize(
+    "filter_key",
+    [
+        "reports.period_end",
+        "REPORTS.PERIOD_END",
+        "filter_reports_period_end",
+        "filter.reports_period_end",
+        "filter-reports_period_end",
+        "auto_895955e0_period_end",
+    ],
+)
+def test_filter_compiler_matches_exact_column_alias_ending_with_range_suffix(filter_key: str) -> None:
     contract = {
         "filters": [
             {
@@ -497,7 +508,7 @@ def test_filter_compiler_matches_exact_column_alias_ending_with_range_suffix() -
 
     compiled = FilterCompilerService.compile_with_contract(
         query_id="query-1",
-        filter_values={"reports.period_end": "Q4"},
+        filter_values={filter_key: "Q4"},
         filter_contract_json=json.dumps(contract),
     )
 
@@ -606,6 +617,32 @@ def test_filter_compiler_rejects_suffixed_key_with_no_exact_or_base_match() -> N
         FilterCompilerService.compile_with_contract(
             query_id="query-1",
             filter_values={"filter_period_end": "Q4"},
+            filter_contract_json=json.dumps(contract),
+        )
+
+
+@pytest.mark.parametrize("filter_type", ["select", "text", "multiselect"])
+@pytest.mark.parametrize("suffix", ["_start", "_end", "_min", "_max"])
+@pytest.mark.parametrize("filter_key", ["filter_status", "orders.status"])
+def test_filter_compiler_rejects_range_shorthand_for_non_range_filter(
+    filter_type: str, suffix: str, filter_key: str
+) -> None:
+    contract = {
+        "filters": [
+            {
+                "id": "filter_status",
+                "field_name": "orders.status",
+                "filter_type": filter_type,
+                "allowed_operators": ["eq", "in", "gte", "lte"],
+                "default_operator": "eq",
+            }
+        ]
+    }
+
+    with pytest.raises(FilterCompilationError, match="Unknown filter key"):
+        FilterCompilerService.compile_with_contract(
+            query_id="query-1",
+            filter_values={f"{filter_key}{suffix}": "paid"},
             filter_contract_json=json.dumps(contract),
         )
 

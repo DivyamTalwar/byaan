@@ -321,13 +321,7 @@ class FilterCompilerService:
         by_alias: dict[str, dict[str, Any]],
         filter_key: str,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        """
-        Resolve a filter_values key to its contract spec.
-
-        An exactly configured id/alias always wins, so columns named like `period_end` or
-        `score_max` keep their identity. Range suffixes are only treated as operator
-        shorthand (`filter_date_end` -> lte on `filter_date`) when no exact match exists.
-        """
+        """Resolve exact ids/aliases first, then date/number range bound suffixes."""
         exact_spec = FilterCompilerService._lookup_spec(by_id, by_alias, filter_key)
         if exact_spec:
             return exact_spec, None
@@ -336,7 +330,11 @@ class FilterCompilerService:
         if not operator_override:
             return None, None
 
-        return FilterCompilerService._lookup_spec(by_id, by_alias, base_key), operator_override
+        base_spec = FilterCompilerService._lookup_spec(by_id, by_alias, base_key)
+        if not base_spec or base_spec.get("filter_type") not in {"date_range", "number_range"}:
+            return None, None
+
+        return base_spec, operator_override
 
     @staticmethod
     def _split_filter_key(filter_key: str) -> tuple[str, str | None]:
