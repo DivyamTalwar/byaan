@@ -193,9 +193,11 @@ class DuckDBService:
         Convert values produced by DuckDB into JSON-serialisable primitives.
 
         Leaf rules (NaN/Infinity, Decimal, temporal, UUID, bytes) are applied
-        recursively so LIST/STRUCT/MAP columns convert exactly like flat ones.
-        LIST/tuple become JSON arrays; STRUCT/MAP become JSON objects whose keys
-        are themselves made JSON-safe. Primitives are returned untouched.
+        recursively for query results and schema samples, including sample_values.
+        LIST/ARRAY tuples become JSON arrays; STRUCT/MAP become JSON objects whose
+        keys are also converted. Callers can use json.dumps without a default hook.
+        Colliding converted MAP keys raise ValueError; cast them to distinct text
+        in the query (for example, MAP {hex(k): v}). Primitives remain unchanged.
         """
         if value is None:
             return None

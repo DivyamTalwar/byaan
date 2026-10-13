@@ -5,7 +5,7 @@ agent tool layer.
 """
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,6 +22,15 @@ NESTED_SELECT = (
     "MAP {DATE '2025-05-01': 7} AS date_keyed, "
     "[{'at': TIMESTAMP '2025-06-01 08:30:00'}] AS list_of_structs "
     "FROM rows"
+)
+
+EXTENDED_NESTED_SELECT = (
+    "SELECT "
+    "[1, 2]::INT[2] AS numbers, "
+    "[DATE '2025-01-15', DATE '2025-02-20']::DATE[2] AS event_dates, "
+    "[{'id': '12345678-1234-5678-1234-567812345678'::UUID, "
+    "'elapsed': INTERVAL '1 day 2 hours', "
+    "'at': TIMESTAMPTZ '2025-06-01 08:30:00+00'}] AS records"
 )
 
 
@@ -55,6 +64,30 @@ async def _first_record(descriptor: DuckDBFileDescriptor, query: str) -> dict:
 
 
 class TestNestedQueryResults:
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("[1, 2]::INT[2]", [1, 2]),
+            ("[DATE '2025-01-15', DATE '2025-02-20']::DATE[2]", ["2025-01-15", "2025-02-20"]),
+        ],
+    )
+    async def test_fixed_size_array_is_converted(self, csv_descriptor, expression, expected):
+        with duckdb.connect(database=":memory:") as conn:
+            assert isinstance(conn.execute(f"SELECT {expression}").fetchone()[0], tuple)
+        record = await _first_record(csv_descriptor, f"SELECT {expression} AS pair FROM rows")
+        assert record["pair"] == expected
+        assert isinstance(record["pair"], list)
+        assert json.loads(json.dumps(record))["pair"] == expected
+
+    async def test_nested_uuid_interval_and_timestamptz_are_converted(self, csv_descriptor):
+        record = await _first_record(csv_descriptor, EXTENDED_NESTED_SELECT + " FROM rows")
+        nested = json.loads(json.dumps(record))["records"][0]
+        assert nested["id"] == "12345678-1234-5678-1234-567812345678"
+        assert nested["elapsed"] == "1 day, 2:00:00"
+        timestamp = datetime.fromisoformat(nested["at"])
+        assert timestamp.tzinfo is not None
+        assert timestamp.astimezone(UTC) == datetime(2025, 6, 1, 8, 30, tzinfo=UTC)
+
     async def test_list_of_dates_is_converted(self, csv_descriptor):
         record = await _first_record(csv_descriptor, NESTED_SELECT)
         assert record["event_dates"] == ["2025-01-15", "2025-02-20"]
@@ -156,6 +189,23 @@ NESTED_PARQUET_SELECT = (
 
 class TestCollectSchemaNestedParquet:
     """Parquet is the only supported reader that carries DATE/DECIMAL inside nested types."""
+
+    async def test_extended_nested_samples_are_converted(self, tmp_path):
+        descriptor = write_parquet(tmp_path, EXTENDED_NESTED_SELECT)
+        result = await DuckDBService.collect_schema([descriptor], sample_rows=5)
+        samples = json.loads(json.dumps(result["sample_data"]))["nested"]
+        record = samples[0]
+        assert record["numbers"] == [1, 2]
+        assert record["event_dates"] == ["2025-01-15", "2025-02-20"]
+        nested = record["records"][0]
+        assert nested["id"] == "12345678-1234-5678-1234-567812345678"
+        assert nested["elapsed"] == "1 day, 2:00:00"
+        timestamp = datetime.fromisoformat(nested["at"])
+        assert timestamp.tzinfo is not None
+        assert timestamp.astimezone(UTC) == datetime(2025, 6, 1, 8, 30, tzinfo=UTC)
+        columns = json.loads(json.dumps(result["schema"]["nested"]["columns"]))
+        for column in columns:
+            assert column["sample_values"] == [record[column["name"]]]
 
     async def test_nested_sample_data_is_converted(self, tmp_path):
         descriptor = write_parquet(tmp_path, NESTED_PARQUET_SELECT)
