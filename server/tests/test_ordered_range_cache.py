@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -25,8 +26,15 @@ def _between(low: Any, high: Any) -> QueryFilter:
 async def orders_connection():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        await conn.execute(text("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount INTEGER)"))
-        await conn.execute(text("INSERT INTO orders (id, amount) VALUES (1, 5), (2, 15), (3, 25)"))
+        await conn.execute(text("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount INTEGER, created_at TIMESTAMP)"))
+        await conn.execute(
+            text(
+                "INSERT INTO orders (id, amount, created_at) VALUES "
+                "(1, 5, '2025-01-01 00:00:00'), "
+                "(2, 15, '2025-01-15 12:00:00'), "
+                "(3, 25, '2025-01-31 23:59:59.999999')"
+            )
+        )
 
     async with engine.connect() as conn:
         yield conn
@@ -98,6 +106,35 @@ async def test_reversed_range_does_not_reuse_cached_normal_range_result(orders_c
     cache = QueryResultCache()
     normal_key = cache.generate_key(QUERY_ID, normal)
     reversed_key = cache.generate_key(QUERY_ID, reversed_range)
+    await cache.set(normal_key, {"data": normal_rows, "query_name": "orders"})
+
+    assert await cache.get(normal_key) == {"data": normal_rows, "query_name": "orders"}
+    assert await cache.get(reversed_key) is None
+
+
+@pytest.mark.asyncio
+async def test_reversed_date_range_does_not_reuse_cached_normal_range_result(orders_connection) -> None:
+    normal = [
+        QueryFilter(field="created_at", operator="between", value=["2025-01-01", "2025-01-31"], ui_type="date_range")
+    ]
+    reversed_range = [
+        QueryFilter(field="created_at", operator="between", value=["2025-01-31", "2025-01-01"], ui_type="date_range")
+    ]
+
+    _, normal_params = DatabaseOperationsService.apply_filters_to_sql(BASE_QUERY, normal, "sqlite")
+    _, reversed_params = DatabaseOperationsService.apply_filters_to_sql(BASE_QUERY, reversed_range, "sqlite")
+    assert normal_params == {"p1": datetime(2025, 1, 1), "p2": datetime(2025, 1, 31, 23, 59, 59, 999999)}
+    assert reversed_params == {"p1": datetime(2025, 1, 31), "p2": datetime(2025, 1, 1, 23, 59, 59, 999999)}
+
+    normal_rows = await _run_filtered_query(orders_connection, normal)
+    reversed_rows = await _run_filtered_query(orders_connection, reversed_range)
+    assert normal_rows == [1, 2, 3]
+    assert reversed_rows == []
+
+    cache = QueryResultCache()
+    normal_key = cache.generate_key(QUERY_ID, normal)
+    reversed_key = cache.generate_key(QUERY_ID, reversed_range)
+    assert normal_key != reversed_key
     await cache.set(normal_key, {"data": normal_rows, "query_name": "orders"})
 
     assert await cache.get(normal_key) == {"data": normal_rows, "query_name": "orders"}

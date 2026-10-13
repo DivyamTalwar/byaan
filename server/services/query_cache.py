@@ -1,10 +1,3 @@
-"""Query result cache.
-
-Keys are ``byaan:query:{query_id}``, plus a digest of the normalized filters when filters are
-present. ``between`` bounds are order-sensitive and keyed as ordered bounds; every other list
-value (``in``/multiselect) stays order-insensitive.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -24,8 +17,7 @@ logger = get_logger(__name__)
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", 3600))  # 1 hour default
 CACHE_PREFIX = "byaan:query"
 
-# Marks the ordered-bounds encoding of a between filter. Bumping it separates new range
-# keys from any older entry whose bounds were flattened into an order-insensitive list.
+# Separate ordered ranges from legacy order-insensitive keys.
 ORDERED_RANGE_FORMAT = "range.v1"
 
 
@@ -58,7 +50,7 @@ def normalize_ordered_range_value(value: Any, ui_type: str) -> dict[str, Any]:
 
 def normalize_filter_value(value: Any, ui_type: str, operator: str | None = None) -> Any:
     """Normalize filter values for deterministic cache keys."""
-    if operator and operator.lower() == "between":
+    if operator == "between":
         return normalize_ordered_range_value(value, ui_type)
     if ui_type in ("date", "date_range"):
         if isinstance(value, str) and len(value) >= 10:
