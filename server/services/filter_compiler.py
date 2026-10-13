@@ -339,8 +339,6 @@ class FilterCompilerService:
     def _resolve_operator(spec: dict[str, Any], value: Any) -> str:
         filter_type = str(spec.get("filter_type", "")).lower()
         if filter_type in {"date_range", "number_range"}:
-            # Range types must be checked before the generic list->"in" rule so that
-            # [lower, upper] endpoint lists compile to "between" instead of set membership.
             if isinstance(value, list):
                 return "between"
             allowed = [str(op).lower() for op in spec.get("allowed_operators", [])]
@@ -390,8 +388,8 @@ class FilterCompilerService:
         - suffixed key (`<id>_start`/`_end`/`_min`/`_max`) -> single gte/lte entry
         - dict of bounds (`{"min": ..., "max": ...}`) -> gte and/or lte entries; open-ended
           dicts yield only the bound that is present
-        - two-item list `[lower, upper]` -> one "between" entry; any other list length is
-          rejected during coercion unless empty/all-empty (ignored by the caller)
+        - two-item list `[lower, upper]` -> one "between" entry, or gte/lte for a single
+          non-empty bound; other lengths are rejected unless empty/all-empty
         - scalar -> first allowed operator in eq/gte/lte/gt/lt order, then the default
         """
         filter_type = str(spec.get("filter_type", "")).lower()
@@ -400,6 +398,14 @@ class FilterCompilerService:
             if filter_type == "number_range" and FilterCompilerService._is_transient_number_input(value):
                 return []
             return [(operator_override, value, filter_key)]
+
+        if filter_type in {"date_range", "number_range"} and isinstance(value, list) and len(value) == 2:
+            if any(
+                FilterCompilerService._is_empty_filter_value(endpoint)
+                or (filter_type == "number_range" and FilterCompilerService._is_transient_number_input(endpoint))
+                for endpoint in value
+            ):
+                value = {"min": value[0], "max": value[1]}
 
         if filter_type in {"date_range", "number_range"} and isinstance(value, dict):
             lower_value, upper_value = FilterCompilerService._extract_range_bounds(value)

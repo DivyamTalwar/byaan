@@ -478,6 +478,77 @@ def test_filter_compiler_number_range_two_value_list_compiles_to_between() -> No
     assert compiled[0].value == [10, 20.5]
 
 
+@pytest.mark.parametrize("empty_endpoint", [None, "", "   "])
+@pytest.mark.parametrize("missing_lower", [False, True])
+@pytest.mark.parametrize(
+    "contract,filter_key,endpoint,expected_value",
+    [
+        (DATE_RANGE_CONTRACT, "filter_date", "2025-01-01", "2025-01-01"),
+        (NUMBER_RANGE_CONTRACT, "filter_amount", "10", 10),
+        (NUMBER_RANGE_CONTRACT, "filter_amount", 0, 0),
+    ],
+)
+def test_filter_compiler_range_list_with_empty_endpoint_compiles_single_bound(
+    empty_endpoint, missing_lower, contract, filter_key, endpoint, expected_value
+) -> None:
+    value = [empty_endpoint, endpoint] if missing_lower else [endpoint, empty_endpoint]
+    compiled = FilterCompilerService.compile_with_contract(
+        query_id="query-1",
+        filter_values={filter_key: value},
+        filter_contract_json=contract,
+    )
+
+    operator = "lte" if missing_lower else "gte"
+    if missing_lower and filter_key == "filter_date":
+        expected_value += "T23:59:59.999999"
+    assert len(compiled) == 1
+    assert compiled[0].operator == operator
+    assert compiled[0].value == expected_value
+    query, params = DatabaseOperationsService.apply_filters_to_sql("SELECT * FROM orders", compiled, "pg")
+    assert "BETWEEN" not in query
+    assert ("<= :p1" if missing_lower else ">= :p1") in query
+    expected_param = datetime.fromisoformat(expected_value) if filter_key == "filter_date" else expected_value
+    assert params == {"p1": expected_param}
+
+
+@pytest.mark.parametrize(
+    "contract,filter_key", [(DATE_RANGE_CONTRACT, "filter_date"), (NUMBER_RANGE_CONTRACT, "filter_amount")]
+)
+def test_filter_compiler_range_list_with_both_endpoints_empty_is_ignored(contract, filter_key) -> None:
+    assert (
+        FilterCompilerService.compile_with_contract(
+            query_id="query-1",
+            filter_values={filter_key: [None, "   "]},
+            filter_contract_json=contract,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("value,operator", [([10, None], "gte"), ([None, 20], "lte")])
+def test_filter_compiler_open_range_list_respects_allowed_operators(value, operator) -> None:
+    contract = json.loads(NUMBER_RANGE_CONTRACT)
+    contract["filters"][0]["allowed_operators"] = ["between"]
+    with pytest.raises(FilterCompilationError, match=f"Operator '{operator}' is not allowed"):
+        FilterCompilerService.compile_with_contract(
+            query_id="query-1",
+            filter_values={"filter_amount": value},
+            filter_contract_json=json.dumps(contract),
+        )
+
+
+@pytest.mark.parametrize("value,operator,expected_value", [([10, "-"], "gte", 10), (["-", 20], "lte", 20)])
+def test_filter_compiler_number_range_list_ignores_transient_endpoint(value, operator, expected_value) -> None:
+    compiled = FilterCompilerService.compile_with_contract(
+        query_id="query-1",
+        filter_values={"filter_amount": value},
+        filter_contract_json=NUMBER_RANGE_CONTRACT,
+    )
+    assert len(compiled) == 1
+    assert compiled[0].operator == operator
+    assert compiled[0].value == expected_value
+
+
 def test_filter_compiler_range_list_rejects_single_endpoint() -> None:
     with pytest.raises(FilterCompilationError, match="exactly 2 values"):
         FilterCompilerService.compile_with_contract(
